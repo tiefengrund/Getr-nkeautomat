@@ -6,15 +6,15 @@ import threading
 from Adafruit_CharLCD import Adafruit_CharLCD
 
 # Setup GPIO pins
-TEMP_SENSOR_PIN = 4  # GPIO pin connected to the temperature sensor
-COOLING_PIN = 17  # GPIO pin to control the cooling system
-HEATING_PIN = 27  # GPIO pin to control the heating system
-FAN_PIN = 22  # GPIO pin to control the fan
-LIGHT_PIN = 5  # GPIO pin to control the light
-RELAY_PIN = 13  # GPIO pin to control the relay
+TEMP_SENSOR_PIN = 4  # temperature sensor
+COOLING_PIN = 17  # cooling system
+HEATING_PIN = 27  # heating system
+FAN_PIN = 22  # fan
+LIGHT_PIN = 5  # light
+RELAY_PIN = 13  # relay
 
 # GPIO pins for the buttons
-BUTTON_PINS = [6, 12, 16, 20, 21, 26]  # Example GPIO pins for 6 buttons
+BUTTON_PINS = [6, 12, 16, 20, 21, 26]  # 6 Fächer
 
 # Initialize GPIO devices
 cooling = DigitalOutputDevice(COOLING_PIN)
@@ -32,7 +32,7 @@ lcd_columns = 16
 lcd_rows = 2
 lcd = Adafruit_CharLCD()
 
-# Drinks left (example values, adjust as necessary)
+# Hier müssen wir zählen wieviel ins Fach passt
 drinks_left = [5, 5, 5, 5, 5, 5]
 
 def update_display():
@@ -76,7 +76,7 @@ def control_temperature():
 def control_light():
     while True:
         current_time = datetime.now().time()
-        if current_time.hour >= 20 or current_time.hour < 6:  # Example night time: 8 PM to 6 AM
+        if current_time.hour >= 20 or current_time.hour < 6:  # Wir können hier auch noch einen fotosensor einbauen
             light.on()
         else:
             light.off()
@@ -85,7 +85,7 @@ def control_light():
 def control_relay(button_index):
     print(f"Button {button_index + 1} pressed, activating relay for the motor...")
     relay.on()
-    time.sleep(1)  # Keep the relay on for 1 second
+    time.sleep(1)  # hier müssen wir testen wie lange der drehen muss
     relay.off()
     print("Relay deactivated.")
 
