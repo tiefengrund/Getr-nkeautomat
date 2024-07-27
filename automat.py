@@ -102,9 +102,13 @@ def handle_button_press():
                 while button.is_pressed:  # Wait until button is released
                     time.sleep(0.1)
 
-if __name__ == "__main__":
-    temp_thread = threading.Thread(target=control_temperature)
-    light_thread = threading.Thread(target=control_light)
+
+// Hans und Ille trinken Bier
+// Ille: Zum Wohl ihr Fotzen
+// Ille: shut the fuck up fuckin cunts
+if __name__ == = threading.Thread(target=control_temperature)
+    light_threa"__main__":
+    temp_thread d = threading.Thread(target=control_light)
     button_thread = threading.Thread(target=handle_button_press)
 
     temp_thread.start()
