@@ -1,112 +1,129 @@
 import RPi.GPIO as GPIO
-import Adafruit_DHT
 import time
-import spidev
-from lcd import drivers
+import board
+import busio
+import adafruit_character_lcd.character_lcd_i2c as character_lcd
+import adafruit_dht  # If using DHT22 sensor
+import digitalio
+from adafruit_bme280 import basic as adafruit_bme280  # For BME280 (alternative to DHT22)
 
 # Pin Definitions
-TEMP_SENSOR_PIN = 4  # GPIO pin for DHT22 sensor
-LDR_CHANNEL = 0      # MCP3008 channel for LDR
-COOLER_PIN = 17      # GPIO pin for cooler
-HEATER_PIN = 27      # GPIO pin for heater
-LIGHT_PIN = 22       # GPIO pin for light
-RELAY_PIN = 23       # GPIO pin for relay
-BUTTON_PINS = [5, 6, 13, 19, 26, 21]  # GPIO pins for buttons
-
-# Constants
-TEMP_MIN = 7         # Minimum temperature in Celsius
-TEMP_MAX = 9         # Maximum temperature in Celsius
-LIGHT_THRESHOLD = 500  # LDR threshold for light
-DHT_SENSOR = Adafruit_DHT.DHT22
-
-# Initialize MCP3008 SPI
-spi = spidev.SpiDev()
-spi.open(0, 0)
-spi.max_speed_hz = 1350000
-
-# Initialize LCD
-display = drivers.Lcd()
-
-# Drink counts
-drinks_left = [5, 5, 5, 5, 5, 5]
+# Relay Module 1 (Snack Spirals)
+SNACK_SPIRALS_PINS = [17, 27, 22, 23, 24, 25]  
+# Relay Module 2 (Fan, Heating, Cooling)
+FAN_PIN = 12
+HEATING_PIN = 13
+COOLING_PIN = 19
+BUTTONS_PINS = [5, 6, 13, 19, 26, 21, 20, 16]  # All button pins
+TEMP_SENSOR_PIN = 4  # GPIO pin for temperature sensor
 
 # Setup GPIO
 GPIO.setmode(GPIO.BCM)
-GPIO.setup(COOLER_PIN, GPIO.OUT)
-GPIO.setup(HEATER_PIN, GPIO.OUT)
-GPIO.setup(LIGHT_PIN, GPIO.OUT)
-GPIO.setup(RELAY_PIN, GPIO.OUT)
+for pin in SNACK_SPIRALS_PINS + [FAN_PIN, HEATING_PIN, COOLING_PIN]:
+    GPIO.setup(pin, GPIO.OUT)
+    GPIO.output(pin, GPIO.LOW)
 
-for pin in BUTTON_PINS:
-    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+for button_pin in BUTTONS_PINS:
+    GPIO.setup(button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# Function to read from MCP3008
-def read_adc(channel):
-    adc = spi.xfer2([1, (8 + channel) << 4, 0])
-    data = ((adc[1] & 3) << 8) + adc[2]
-    return data
+# Setup I2C LCD
+i2c = busio.I2C(board.SCL, board.SDA)
+lcd_columns = 16
+lcd_rows = 2
+lcd = character_lcd.Character_LCD_I2C(i2c, lcd_columns, lcd_rows)
+lcd.clear()
 
-# Function to control temperature
-def control_temperature(temp):
-    if temp > TEMP_MAX:
-        GPIO.output(COOLER_PIN, GPIO.HIGH)
-        GPIO.output(HEATER_PIN, GPIO.LOW)
-    elif temp < TEMP_MIN:
-        GPIO.output(COOLER_PIN, GPIO.LOW)
-        GPIO.output(HEATER_PIN, GPIO.HIGH)
-    else:
-        GPIO.output(COOLER_PIN, GPIO.LOW)
-        GPIO.output(HEATER_PIN, GPIO.LOW)
+# Setup Temperature Sensor (DHT22)
+dht_device = adafruit_dht.DHT22(board.D4)  # Use adafruit_bme280 for BME280 sensor
 
-# Function to control light
-def control_light(ldr_value):
-    if ldr_value < LIGHT_THRESHOLD:
-        GPIO.output(LIGHT_PIN, GPIO.HIGH)
-    else:
-        GPIO.output(LIGHT_PIN, GPIO.LOW)
+# Configuration dictionary
+config = {
+    'snack_spirals': {
+        0: {'pin': 17, 'activation_time': 1},  # Motor 1
+        1: {'pin': 27, 'activation_time': 1},  # Motor 2
+        2: {'pin': 22, 'activation_time': 1},  # Motor 3
+        3: {'pin': 23, 'activation_time': 1},  # Motor 4
+        4: {'pin': 24, 'activation_time': 1},  # Motor 5
+        5: {'pin': 25, 'activation_time': 1},  # Motor 6
+    },
+    'devices': {
+        'fan': {'pin': FAN_PIN, 'activation_time': 2},
+        'heating': {'pin': HEATING_PIN, 'activation_time': 2},
+        'cooling': {'pin': COOLING_PIN, 'activation_time': 2},
+    },
+    'buttons': {
+        0: {'device': 'snack_spirals', 'index': 0},
+        1: {'device': 'snack_spirals', 'index': 1},
+        2: {'device': 'snack_spirals', 'index': 2},
+        3: {'device': 'snack_spirals', 'index': 3},
+        4: {'device': 'snack_spirals', 'index': 4},
+        5: {'device': 'snack_spirals', 'index': 5},
+        6: {'device': 'devices', 'device_name': 'fan'},
+        7: {'device': 'devices', 'device_name': 'heating'},
+        8: {'device': 'devices', 'device_name': 'cooling'},
+    }
+}
 
-# Function to select drink
-def select_drink(drink_number):
-    if drinks_left[drink_number - 1] > 0:
-        drinks_left[drink_number - 1] -= 1
-        GPIO.output(RELAY_PIN, GPIO.HIGH)
-        time.sleep(1)  # Simulate dispensing time
-        GPIO.output(RELAY_PIN, GPIO.LOW)
-        display.lcd_display_string(f"Drink {drink_number} selected", 1)
-        display.lcd_display_string(f"Remaining: {drinks_left[drink_number - 1]}", 2)
-        time.sleep(2)
-    else:
-        display.lcd_display_string(f"Drink {drink_number} sold out", 1)
-        time.sleep(2)
-    display.lcd_clear()
+# Function to activate relay
+def activate_device(device_type, index=None, device_name=None):
+    if device_type == 'snack_spirals':
+        if index is not None:
+            pin = config['snack_spirals'][index]['pin']
+            activation_time = config['snack_spirals'][index]['activation_time']
+            GPIO.output(pin, GPIO.HIGH)
+            time.sleep(activation_time)
+            GPIO.output(pin, GPIO.LOW)
+    elif device_type == 'devices':
+        if device_name in config['devices']:
+            pin = config['devices'][device_name]['pin']
+            activation_time = config['devices'][device_name]['activation_time']
+            GPIO.output(pin, GPIO.HIGH)
+            time.sleep(activation_time)
+            GPIO.output(pin, GPIO.LOW)
 
+# Function to get temperature from sensor
+def get_temperature():
+    try:
+        # Using DHT22
+        temperature_c = dht_device.temperature
+        return temperature_c
+    except RuntimeError as e:
+        print(f"Error getting temperature: {e}")
+        return None
+
+# Function to update LCD display
+def update_lcd(drinks_left, temperature):
+    lcd.clear()
+    lcd.message = f"Drinks Left: {drinks_left}\nTemp: {temperature:.1f}C"
+
+# Main loop
 try:
-    while True:
-        # Read temperature
-        humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, TEMP_SENSOR_PIN)
-        
-        # Read LDR value
-        ldr_value = read_adc(LDR_CHANNEL)
-        
-        # Control temperature and light
-        control_temperature(temperature)
-        control_light(ldr_value)
-        
-        # Display temperature and light status on LCD
-        display.lcd_display_string(f"Temp: {temperature:.1f}C", 1)
-        display.lcd_display_string(f"Light: {ldr_value}", 2)
-        
-        # Check for button presses
-        for i, button_pin in enumerate(BUTTON_PINS):
-            if GPIO.input(button_pin) == GPIO.LOW:
-                select_drink(i + 1)
-                time.sleep(0.5)  # Debounce
+    drinks_left = 10  # Initial number of drinks (adjust as needed)
+    update_interval = 60  # Update interval for temperature display (seconds)
+    last_update_time = time.time()
 
-        time.sleep(1)
+    while True:
+        # Check buttons
+        for i, button_pin in enumerate(BUTTONS_PINS):
+            if GPIO.input(button_pin) == GPIO.LOW:  # Button pressed
+                button_config = config['buttons'].get(i)
+                if button_config:
+                    if button_config['device'] == 'snack_spirals':
+                        activate_device('snack_spirals', index=button_config['index'])
+                        drinks_left -= 1  # Decrement drinks count
+                    elif button_config['device'] == 'devices':
+                        activate_device('devices', device_name=button_config['device_name'])
+                time.sleep(0.5)  # Debounce delay
+
+        # Update LCD with temperature
+        current_time = time.time()
+        if current_time - last_update_time >= update_interval:
+            temperature = get_temperature()
+            if temperature is not None:
+                update_lcd(drinks_left, temperature)
+            last_update_time = current_time
 
 except KeyboardInterrupt:
     pass
 finally:
-    display.lcd_clear()
     GPIO.cleanup()
-    spi.close()
