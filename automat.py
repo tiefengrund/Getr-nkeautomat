@@ -1,127 +1,158 @@
 import RPi.GPIO as GPIO
+import Adafruit_DHT
 import time
 import board
-import busio
-from adafruit_character_lcd.character_lcd_i2c import Character_LCD_I2C
-
-# Configuration Variables
-MOTOR_PINS = [17, 27, 22, 23, 24, 25]  # GPIO pins connected to relay IN1-IN6 for motors
-BUTTON_PINS = [12, 13, 19, 16, 20, 21]  # GPIO pins connected to buttons
-LIMIT_SWITCH_PINS = [26, 7, 8, 9, 10, 11]  # GPIO pins connected to limit switches
-FAN_PIN = 5  # GPIO pin for fan
-COOLING_PIN = 6  # GPIO pin for cooling
-HEATING_PIN = 14  # GPIO pin for heating element
-LIGHT_PIN = 15  # GPIO pin for light
+import digitalio
+import adafruit_character_lcd.character_lcd as characterlcd
+import spidev
 
 # LCD Configuration
-lcd_columns = 16
-lcd_rows = 2
-i2c = busio.I2C(board.SCL, board.SDA)
-lcd = Character_LCD_I2C(i2c, lcd_columns, lcd_rows)
+LCD_COLUMNS = 16
+LCD_ROWS = 2
+lcd_rs = digitalio.DigitalInOut(board.D4)
+lcd_en = digitalio.DigitalInOut(board.D5)
+lcd_d4 = digitalio.DigitalInOut(board.D6)
+lcd_d5 = digitalio.DigitalInOut(board.D13)
+lcd_d6 = digitalio.DigitalInOut(board.D19)
+lcd_d7 = digitalio.DigitalInOut(board.D26)
+lcd_backlight = digitalio.DigitalInOut(board.D21)
 
-# Timing and control variables
-MOTOR_RUNTIME_LIMIT = 10  # Maximum time (in seconds) to run a motor if the limit switch fails
-DRINK_COUNT = 6  # Number of drinks available
+lcd = characterlcd.Character_LCD_Mono(
+    lcd_rs, lcd_en, lcd_d4, lcd_d5, lcd_d6, lcd_d7, LCD_COLUMNS, LCD_ROWS, lcd_backlight
+)
+
+# DHT22 Sensor Configuration
+DHT_SENSOR = Adafruit_DHT.DHT22
+DHT_PIN = 4  # GPIO pin where the sensor is connected
+
+# GPIO Pins for Motors, Buttons, and Devices
+MOTORS = [17, 27, 22, 23, 24, 25]
+BUTTONS = [12, 13, 19, 16, 20, 21]
+LIMIT_SWITCHES = [26, 7, 8, 9, 10, 11]
+FAN_PIN = 5
+COOLING_PIN = 6
+HEATING_PIN = 14
+LIGHT_PIN = 15
+
+# Photoresistor (LDR) Configuration
+LDR_CHANNEL = 0  # Analog input channel for LDR
+SPIDEV = spidev.SpiDev()
+SPIDEV.open(0, 0)  # SPI bus 0, device (CS) 0
+SPIDEV.max_speed_hz = 1350000
+
+# Configuration for the number of drinks
+DRINKS_LEFT = [10, 10, 10, 10, 10, 10]  # Initial count of drinks for each button
 
 # Setup GPIO
 GPIO.setmode(GPIO.BCM)
+GPIO.setwarnings(False)
 
-# Initialize motor pins
-for motor_pin in MOTOR_PINS:
-    GPIO.setup(motor_pin, GPIO.OUT)
-    GPIO.output(motor_pin, GPIO.LOW)
+# Setup Motors
+for motor in MOTORS:
+    GPIO.setup(motor, GPIO.OUT)
+    GPIO.output(motor, GPIO.LOW)
 
-# Initialize limit switch pins
-for limit_switch_pin in LIMIT_SWITCH_PINS:
-    GPIO.setup(limit_switch_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+# Setup Buttons
+for button in BUTTONS:
+    GPIO.setup(button, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# Initialize button pins
-for button_pin in BUTTON_PINS:
-    GPIO.setup(button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+# Setup Limit Switches
+for switch in LIMIT_SWITCHES:
+    GPIO.setup(switch, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-# Initialize other device pins
+# Setup Fan, Cooling, Heating, and Light
 GPIO.setup(FAN_PIN, GPIO.OUT)
 GPIO.setup(COOLING_PIN, GPIO.OUT)
 GPIO.setup(HEATING_PIN, GPIO.OUT)
 GPIO.setup(LIGHT_PIN, GPIO.OUT)
 
-# Turn off all devices initially
-GPIO.output(FAN_PIN, GPIO.LOW)
-GPIO.output(COOLING_PIN, GPIO.LOW)
-GPIO.output(HEATING_PIN, GPIO.LOW)
-GPIO.output(LIGHT_PIN, GPIO.LOW)
+def read_sensor():
+    humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, DHT_PIN)
+    if humidity is not None and temperature is not None:
+        return temperature, humidity
+    else:
+        return None, None
 
-# Function to update the LCD display
-def update_lcd():
+def read_ldr():
+    """Read the value from the LDR using SPI."""
+    adc = SPIDEV.xfer2([1, (8 + LDR_CHANNEL) << 4, 0])
+    data = ((adc[1] & 3) << 8) + adc[2]
+    return data
+
+def update_lcd(temperature, humidity, drinks_left):
     lcd.clear()
-    lcd.message = f"Drinks Left: {DRINK_COUNT}\nTemp: {get_temperature()}C"
+    lcd.message = f"Temp: {temperature:.1f}C\nHum: {humidity:.1f}%\nDrinks: {drinks_left}"
 
-# Function to simulate getting the current temperature (Replace with actual sensor reading)
-def get_temperature():
-    return round(20 + (time.time() % 10), 1)  # Example: returns a value between 20.0 and 29.9
-
-# Function to run a motor until its limit switch is pressed or the time limit is reached
 def run_motor_until_limit(motor_pin, limit_switch_pin):
-    global DRINK_COUNT
-    GPIO.output(motor_pin, GPIO.HIGH)  # Start the motor
-    start_time = time.time()
-
-    # Run motor until the limit switch is pressed or the time limit is reached
+    GPIO.output(motor_pin, GPIO.HIGH)
     while GPIO.input(limit_switch_pin) == GPIO.HIGH:
-        if time.time() - start_time > MOTOR_RUNTIME_LIMIT:
-            print(f"Motor on GPIO {motor_pin} timeout. Stopping motor.")
-            break
-        time.sleep(0.01)  # Short delay to prevent CPU overload
+        time.sleep(0.1)
+    GPIO.output(motor_pin, GPIO.LOW)
 
-    GPIO.output(motor_pin, GPIO.LOW)  # Stop the motor
-    print(f"Motor on GPIO {motor_pin} stopped.")
-    DRINK_COUNT -= 1  # Decrease the drink count by one
-    update_lcd()  # Update the LCD display with the new drink count
-
-# Function to activate a device for a set duration
 def activate_device(device_pin, duration):
     GPIO.output(device_pin, GPIO.HIGH)
     time.sleep(duration)
     GPIO.output(device_pin, GPIO.LOW)
 
-# Function to control the fan
-def control_fan(state):
-    GPIO.output(FAN_PIN, GPIO.HIGH if state else GPIO.LOW)
-    print("Fan turned", "on" if state else "off")
+def control_cooling_heating(temperature):
+    cooling_active = False
+    heating_active = False
+    
+    if temperature > 7:
+        GPIO.output(COOLING_PIN, GPIO.HIGH)
+        cooling_active = True
+    else:
+        GPIO.output(COOLING_PIN, GPIO.LOW)
+    
+    if temperature < 3:
+        GPIO.output(HEATING_PIN, GPIO.HIGH)
+        heating_active = True
+    else:
+        GPIO.output(HEATING_PIN, GPIO.LOW)
+    
+    # Control the fan based on cooling or heating status
+    if cooling_active or heating_active:
+        GPIO.output(FAN_PIN, GPIO.HIGH)
+    else:
+        GPIO.output(FAN_PIN, GPIO.LOW)
 
-# Function to control the cooling system
-def control_cooling(state):
-    GPIO.output(COOLING_PIN, GPIO.HIGH if state else GPIO.LOW)
-    print("Cooling system turned", "on" if state else "off")
+def control_light():
+    ldr_value = read_ldr()
+    if ldr_value < 500:  # Adjust threshold as needed
+        GPIO.output(LIGHT_PIN, GPIO.HIGH)
+    else:
+        GPIO.output(LIGHT_PIN, GPIO.LOW)
 
-# Function to control the heating element
-def control_heating(state):
-    GPIO.output(HEATING_PIN, GPIO.HIGH if state else GPIO.LOW)
-    print("Heating element turned", "on" if state else "off")
-
-# Function to control the light
-def control_light(state):
-    GPIO.output(LIGHT_PIN, GPIO.HIGH if state else GPIO.LOW)
-    print("Light turned", "on" if state else "off")
-
-# Main loop
-try:
-    update_lcd()  # Initialize LCD with initial values
+def main():
+    global DRINKS_LEFT
+    
     while True:
-        for i, button_pin in enumerate(BUTTON_PINS):
-            if GPIO.input(button_pin) == GPIO.LOW:  # Button pressed
-                print(f"Button {i+1} pressed. Activating motor {i+1}.")
-                run_motor_until_limit(MOTOR_PINS[i], LIMIT_SWITCH_PINS[i])
-                time.sleep(0.5)  # Debounce delay
+        temperature, humidity = read_sensor()
+        if temperature is not None and humidity is not None:
+            for index, button_pin in enumerate(BUTTONS):
+                if GPIO.input(button_pin) == GPIO.LOW:
+                    if DRINKS_LEFT[index] > 0:
+                        print(f"Button {index + 1} pressed")
+                        motor_pin = MOTORS[index]
+                        limit_switch_pin = LIMIT_SWITCHES[index]
+                        run_motor_until_limit(motor_pin, limit_switch_pin)
+                        DRINKS_LEFT[index] -= 1  # Decrease the drink count
+                        update_lcd(temperature, humidity, DRINKS_LEFT[index])
+                    else:
+                        lcd.clear()
+                        lcd.message = "Out of stock!"
+                    # Delay to prevent multiple triggers
+                    time.sleep(1)
+            
+            # Control Cooling, Heating, and Light
+            control_cooling_heating(temperature)
+            control_light()
         
-        # Example usage: control fan, cooling, heating, and light as needed
-        # Uncomment these lines and replace 'True'/'False' with your conditions
-        # control_fan(True)
-        # control_cooling(True)
-        # control_heating(True)
-        # control_light(True)
+        # Example usage: Activate fan for 5 seconds
+        activate_device(FAN_PIN, 5)
         
-except KeyboardInterrupt:
-    pass
-finally:
-    GPIO.cleanup()
+        # Update every 10 seconds
+        time.sleep(10)
+
+if __name__ == "__main__":
+    main()
