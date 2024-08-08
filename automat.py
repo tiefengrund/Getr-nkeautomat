@@ -1,117 +1,112 @@
-import time
+import RPi.GPIO as GPIO
 import Adafruit_DHT
-from gpiozero import LED, Button, DigitalOutputDevice
-from datetime import datetime
-import threading
-from Adafruit_CharLCD import Adafruit_CharLCD
+import time
+import spidev
+from lcd import drivers
 
-# Setup GPIO pins
-TEMP_SENSOR_PIN = 4  # temperature sensor
-COOLING_PIN = 17  # cooling system
-HEATING_PIN = 27  # heating system
-FAN_PIN = 22  # fan
-LIGHT_PIN = 5  # light
-RELAY_PIN = 13  # relay
+# Pin Definitions
+TEMP_SENSOR_PIN = 4  # GPIO pin for DHT22 sensor
+LDR_CHANNEL = 0      # MCP3008 channel for LDR
+COOLER_PIN = 17      # GPIO pin for cooler
+HEATER_PIN = 27      # GPIO pin for heater
+LIGHT_PIN = 22       # GPIO pin for light
+RELAY_PIN = 23       # GPIO pin for relay
+BUTTON_PINS = [5, 6, 13, 19, 26, 21]  # GPIO pins for buttons
 
-# GPIO pins for the buttons
-BUTTON_PINS = [6, 12, 16, 20, 21, 26]  # 6 Fächer
-
-# Initialize GPIO devices
-cooling = DigitalOutputDevice(COOLING_PIN)
-heating = DigitalOutputDevice(HEATING_PIN)
-fan = DigitalOutputDevice(FAN_PIN)
-light = LED(LIGHT_PIN)
-buttons = [Button(pin) for pin in BUTTON_PINS]
-relay = DigitalOutputDevice(RELAY_PIN)
-
-# DHT sensor setup
+# Constants
+TEMP_MIN = 7         # Minimum temperature in Celsius
+TEMP_MAX = 9         # Maximum temperature in Celsius
+LIGHT_THRESHOLD = 500  # LDR threshold for light
 DHT_SENSOR = Adafruit_DHT.DHT22
 
-# Setup LCD display
-lcd_columns = 16
-lcd_rows = 2
-lcd = Adafruit_CharLCD()
+# Initialize MCP3008 SPI
+spi = spidev.SpiDev()
+spi.open(0, 0)
+spi.max_speed_hz = 1350000
 
-# Hier müssen wir zählen wieviel ins Fach passt
+# Initialize LCD
+display = drivers.Lcd()
+
+# Drink counts
 drinks_left = [5, 5, 5, 5, 5, 5]
 
-def update_display():
-    temperature = get_temperature()
-    if temperature is not None:
-        temp_str = f"Temp: {temperature:.1f}C"
+# Setup GPIO
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(COOLER_PIN, GPIO.OUT)
+GPIO.setup(HEATER_PIN, GPIO.OUT)
+GPIO.setup(LIGHT_PIN, GPIO.OUT)
+GPIO.setup(RELAY_PIN, GPIO.OUT)
+
+for pin in BUTTON_PINS:
+    GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+# Function to read from MCP3008
+def read_adc(channel):
+    adc = spi.xfer2([1, (8 + channel) << 4, 0])
+    data = ((adc[1] & 3) << 8) + adc[2]
+    return data
+
+# Function to control temperature
+def control_temperature(temp):
+    if temp > TEMP_MAX:
+        GPIO.output(COOLER_PIN, GPIO.HIGH)
+        GPIO.output(HEATER_PIN, GPIO.LOW)
+    elif temp < TEMP_MIN:
+        GPIO.output(COOLER_PIN, GPIO.LOW)
+        GPIO.output(HEATER_PIN, GPIO.HIGH)
     else:
-        temp_str = "Temp: Error"
+        GPIO.output(COOLER_PIN, GPIO.LOW)
+        GPIO.output(HEATER_PIN, GPIO.LOW)
 
-    drinks_str = "Drinks: " + "".join([str(d) for d in drinks_left])
-    
-    lcd.clear()
-    lcd.message(temp_str + "\n" + drinks_str)
+# Function to control light
+def control_light(ldr_value):
+    if ldr_value < LIGHT_THRESHOLD:
+        GPIO.output(LIGHT_PIN, GPIO.HIGH)
+    else:
+        GPIO.output(LIGHT_PIN, GPIO.LOW)
 
-def get_temperature():
-    humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, TEMP_SENSOR_PIN)
-    return temperature
+# Function to select drink
+def select_drink(drink_number):
+    if drinks_left[drink_number - 1] > 0:
+        drinks_left[drink_number - 1] -= 1
+        GPIO.output(RELAY_PIN, GPIO.HIGH)
+        time.sleep(1)  # Simulate dispensing time
+        GPIO.output(RELAY_PIN, GPIO.LOW)
+        display.lcd_display_string(f"Drink {drink_number} selected", 1)
+        display.lcd_display_string(f"Remaining: {drinks_left[drink_number - 1]}", 2)
+        time.sleep(2)
+    else:
+        display.lcd_display_string(f"Drink {drink_number} sold out", 1)
+        time.sleep(2)
+    display.lcd_clear()
 
-def control_temperature():
+try:
     while True:
-        temperature = get_temperature()
-        if temperature is not None:
-            print(f"Current Temperature: {temperature:.2f}°C")
-            if temperature > 9:
-                cooling.on()
-                heating.off()
-                fan.on()
-            elif temperature < 7:
-                cooling.off()
-                heating.on()
-                fan.off()
-            else:
-                cooling.off()
-                heating.off()
-                fan.off()
-        else:
-            print("Failed to retrieve temperature data.")
-        update_display()
-        time.sleep(10)
+        # Read temperature
+        humidity, temperature = Adafruit_DHT.read_retry(DHT_SENSOR, TEMP_SENSOR_PIN)
+        
+        # Read LDR value
+        ldr_value = read_adc(LDR_CHANNEL)
+        
+        # Control temperature and light
+        control_temperature(temperature)
+        control_light(ldr_value)
+        
+        # Display temperature and light status on LCD
+        display.lcd_display_string(f"Temp: {temperature:.1f}C", 1)
+        display.lcd_display_string(f"Light: {ldr_value}", 2)
+        
+        # Check for button presses
+        for i, button_pin in enumerate(BUTTON_PINS):
+            if GPIO.input(button_pin) == GPIO.LOW:
+                select_drink(i + 1)
+                time.sleep(0.5)  # Debounce
 
-def control_light():
-    while True:
-        current_time = datetime.now().time()
-        if current_time.hour >= 20 or current_time.hour < 6:  # Wir können hier auch noch einen fotosensor einbauen
-            light.on()
-        else:
-            light.off()
-        time.sleep(60)
+        time.sleep(1)
 
-def control_relay(button_index):
-    print(f"Button {button_index + 1} pressed, activating relay for the motor...")
-    relay.on()
-    time.sleep(1)  # hier müssen wir testen wie lange der drehen muss
-    relay.off()
-    print("Relay deactivated.")
-
-def handle_button_press():
-    while True:
-        for i, button in enumerate(buttons):
-            if button.is_pressed:
-                if drinks_left[i] > 0:
-                    control_relay(i)
-                    drinks_left[i] -= 1
-                    update_display()
-                else:
-                    print(f"No drinks left for button {i + 1}.")
-                while button.is_pressed:  # Wait until button is released
-                    time.sleep(0.1)
-
-
-if __name__ == threading.Thread(target=control_temperature)
-    light_threa"__main__":
-    temp_thread d = threading.Thread(target=control_light)
-    button_thread = threading.Thread(target=handle_button_press)
-
-    temp_thread.start()
-    light_thread.start()
-    button_thread.start()
-
-    temp_thread.join()
-    light_thread.join()
-    button_thread.join()
+except KeyboardInterrupt:
+    pass
+finally:
+    display.lcd_clear()
+    GPIO.cleanup()
+    spi.close()
